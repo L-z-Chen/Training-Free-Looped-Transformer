@@ -1,5 +1,7 @@
 # Training-Free-Looped-Transformers
 
+**Paper:** [arXiv:2605.23872](https://arxiv.org/pdf/2605.23872)
+
 A drop-in runtime patch that iterates a contiguous block of middle decoder
 layers multiple times at inference, with no retraining and no weight
 changes. Implemented for Qwen3 dense (`qwen3`) and Qwen3 MoE (`qwen3_moe`).
