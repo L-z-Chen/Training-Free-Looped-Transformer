@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-loop-plugin"
+version = "0.1.0"
+description = "Registers LoopedQwen3MoeForCausalLM (training-free layer looping) with vLLM"
+
+[project.entry-points."vllm.general_plugins"]
+looped_qwen3_moe = "looped_qwen3_moe:register"
+
+[tool.setuptools]
+py-modules = ["looped_qwen3_moe"]

@@ -49,7 +49,7 @@ Strategy = Literal[
     "midpoint", "heun", "rk4",
     "ema_sched", "heavy_ball", "anderson", "aitken",
     "norm_stab", "poly_blend", "uniform", "per_layer_anchored",
-    "block_anchored",
+    "block_anchored", "layer_anchored_frozen",
 ]
 CacheStrategy = Literal["last", "first", "none"]
 LoopMode = Literal["block", "layer"]
@@ -348,6 +348,138 @@ def _apply_loop(hidden_states, run_block_once, run_one_layer, loop_start, loop_e
     return x
 
 
+# ---------------------------------------------------------------------------
+# layer_anchored_frozen: per-layer damped Euler with norm-interpolated
+# rescaling, frozen MoE routing, and an anchor blend at each layer's exit.
+#
+#   natural = L(x)                      # writes this layer's KV, captures routing fr
+#   N_k     = |x| + (|natural| - |x|) * k/K        (per-token L2 norms)
+#   h       = rescale((1-1/K) x + (1/K) natural, N_1)
+#   for k = 1..K-1:
+#       h = (1-1/K) h + (1/K) L(h; routing=fr)     # no KV write
+#       if k < K-1: h = rescale(h, N_{k+1})
+#   x       = beta * natural + (1-beta) * h
+#   if anchor_rescale: x = rescale(x, |natural|)
+# ---------------------------------------------------------------------------
+
+def _rescale(a, n):
+    """Scale each token vector of `a` to L2 norm `n` (fp32 math, cast back)."""
+    cur = a.float().norm(dim=-1, keepdim=True).clamp_min(1e-6)
+    return (a.float() * (n / cur)).to(a.dtype)
+
+
+def _moe_experts(block, x, sel, rw):
+    """Expert mixture for flattened tokens x [T, H] under a given routing.
+
+    A block may provide `_experts_with_routing(x, sel, rw)` (e.g. a faster
+    stacked-weight kernel); otherwise this is the stock transformers expert loop.
+    """
+    fn = getattr(block, "_experts_with_routing", None)
+    if fn is not None:
+        return fn(x, sel, rw)
+    T, H = x.shape
+    out = torch.zeros((T, H), dtype=x.dtype, device=x.device)
+    mask = torch.nn.functional.one_hot(sel, num_classes=block.num_experts).permute(2, 1, 0)
+    for e in torch.greater(mask.sum(dim=(-1, -2)), 0).nonzero():
+        idx, top_x = torch.where(mask[e].squeeze(0))
+        cur = x[None, top_x].reshape(-1, H)
+        out.index_add_(0, top_x, (block.experts[e](cur) * rw[top_x, idx, None]).to(x.dtype))
+    return out
+
+
+def _routing_moe_forward(self, hidden_states):
+    """Sparse-MoE forward with routing capture / freeze for the loop window.
+
+    mode None / "capture": the original forward runs unchanged (so the natural
+    pass is bit-identical to an unpatched model); "capture" also records the
+    routing, recomputed from the returned router logits exactly as the stock
+    block does. mode "frozen": experts are evaluated with the recorded routing.
+    """
+    mode = getattr(self, "_loop_route_mode", None)
+    if mode != "frozen":
+        out, router_logits = self._loop_orig_forward(hidden_states)
+        if mode == "capture":
+            rw = torch.nn.functional.softmax(router_logits, dim=1, dtype=torch.float)
+            rw, sel = torch.topk(rw, self.top_k, dim=-1)
+            if self.norm_topk_prob:
+                rw /= rw.sum(dim=-1, keepdim=True)
+            self._loop_frozen_routing = (sel, rw.to(hidden_states.dtype))
+        return out, router_logits
+    B, S, H = hidden_states.shape
+    x = hidden_states.view(-1, H)
+    sel, rw = self._loop_frozen_routing
+    router_logits = self.gate(x)   # returned only to keep the block's output signature
+    return _moe_experts(self, x, sel, rw).reshape(B, S, H), router_logits
+
+
+def _install_routing_hooks(inner, loop_indices):
+    """Wrap the sparse-MoE blocks of the loop window (no-op for dense MLPs).
+
+    Install after any other replacement of the MoE block forward, since the
+    wrapper delegates to whatever forward is bound at install time.
+    """
+    for li in loop_indices:
+        blk = inner.layers[li].mlp
+        if not (hasattr(blk, "gate") and hasattr(blk, "top_k")):
+            continue
+        if getattr(blk, "_loop_routing_installed", False):
+            continue
+        blk._loop_orig_forward = blk.forward
+        blk.forward = MethodType(_routing_moe_forward, blk)
+        blk._loop_route_mode = None
+        blk._loop_routing_installed = True
+
+
+def _layer_anchored_frozen(self, x, loop_start, loop_end, is_incremental,
+                           past_key_values, call_with_cache, call_no_cache):
+    K = int(getattr(self, "_loop_K", 1))
+    beta = float(getattr(self, "_loop_anchor_beta", 0.0))
+    anchor_rescale = bool(getattr(self, "_loop_anchor_rescale", False))
+    step = 1.0 / K
+    for li in range(loop_start, loop_end):
+        layer = self.layers[li]
+        mlp = layer.mlp
+        freeze = getattr(mlp, "_loop_routing_installed", False)
+        if freeze:
+            mlp._loop_route_mode = "capture"
+        if is_incremental:
+            saved = past_key_values.layers[li].get_seq_length()
+        # Natural pass: writes this layer's KV from its actual input.
+        natural = call_with_cache(layer, x)
+        if is_incremental:
+            # Iterations must attend to past KV plus their own token only: set the
+            # natural-pass entry aside and restore it after the loop.
+            kv = past_key_values.layers[li]
+            nat_k, nat_v = kv.keys[..., saved:, :], kv.values[..., saved:, :]
+            kv.crop(saved)
+        if freeze:
+            mlp._loop_route_mode = "frozen"
+        n_in = x.float().norm(dim=-1, keepdim=True)
+        n_tgt = natural.float().norm(dim=-1, keepdim=True)
+
+        def target(k):
+            return n_in + (n_tgt - n_in) * (k / K)
+
+        h = _rescale((1.0 - step) * x + step * natural, target(1))
+        for k in range(1, K):
+            if is_incremental:
+                y = call_with_cache(layer, h)
+                past_key_values.layers[li].crop(saved)
+            else:
+                y = call_no_cache(layer, h)
+            h = (1.0 - step) * h + step * y
+            if k < K - 1:
+                h = _rescale(h, target(k + 1))
+        if freeze:
+            mlp._loop_route_mode = None
+        if is_incremental:
+            past_key_values.layers[li].update(nat_k, nat_v)
+        x = beta * natural + (1.0 - beta) * h
+        if anchor_rescale:
+            x = _rescale(x, n_tgt)
+    return x
+
+
 def _looped_forward(
     self,
     input_ids: Optional[torch.LongTensor] = None,
@@ -607,6 +739,11 @@ def _looped_forward(
                 h_iter = (1.0 - 1.0 / K) * h_iter + (1.0 / K) * y
             h = beta * natural + (1.0 - beta) * h_iter
         hidden_states = h
+    elif strategy == "layer_anchored_frozen":
+        hidden_states = _layer_anchored_frozen(
+            self, hidden_states, loop_start, loop_end, is_incremental,
+            past_key_values, _call_with_cache, _call_no_cache,
+        )
     else:
         hidden_states = _apply_loop(
             hidden_states, run_block_once, run_one_layer,
@@ -614,7 +751,8 @@ def _looped_forward(
         )
 
     cache_strategy = getattr(self, "_loop_cache_strategy", "last")
-    if use_cache and past_key_values is not None and cache_strategy != "none":
+    if (use_cache and past_key_values is not None and cache_strategy != "none"
+            and strategy != "layer_anchored_frozen"):
         _stash = hidden_states if cache_strategy == "last" else x_in_for_cache
         for li in range(loop_start, loop_end):
             _stash = _call_with_cache(self.layers[li], _stash)
@@ -808,6 +946,11 @@ def _looped_forward_moe(
                     g_h = _call_no_cache(self.layers[li], g_h)
             h_iter = h_iter + h_step * (g_h - h_iter)
         hidden_states = beta * natural + (1.0 - beta) * h_iter
+    elif strategy == "layer_anchored_frozen":
+        hidden_states = _layer_anchored_frozen(
+            self, hidden_states, loop_start, loop_end, is_incremental,
+            past_key_values, _call_with_cache, _call_no_cache,
+        )
     else:
         hidden_states = _apply_loop(
             hidden_states, run_block_once, run_one_layer,
@@ -815,7 +958,8 @@ def _looped_forward_moe(
         )
 
     cache_strategy = getattr(self, "_loop_cache_strategy", "last")
-    if use_cache and past_key_values is not None and cache_strategy != "none":
+    if (use_cache and past_key_values is not None and cache_strategy != "none"
+            and strategy != "layer_anchored_frozen"):
         _stash = hidden_states if cache_strategy == "last" else x_in_for_cache
         for li in range(loop_start, loop_end):
             _stash = _call_with_cache(self.layers[li], _stash)
@@ -1018,7 +1162,8 @@ def _looped_forward_qwen2moe(
         )
 
     cache_strategy = getattr(self, "_loop_cache_strategy", "last")
-    if use_cache and past_key_values is not None and cache_strategy != "none":
+    if (use_cache and past_key_values is not None and cache_strategy != "none"
+            and strategy != "layer_anchored_frozen"):
         _stash = hidden_states if cache_strategy == "last" else x_in_for_cache
         for li in range(loop_start, loop_end):
             _stash = _call_with_cache(self.layers[li], _stash)
@@ -1049,6 +1194,7 @@ def patch_qwen3_with_loop(
     decode_mode: DecodeMode = "bypass",
     decode_first_n: int = 0,
     anchor_beta: float = 0.0,
+    anchor_rescale: bool = False,
 ):
     """
     Patch a Qwen3{,Moe}ForCausalLM (or {Qwen3,Qwen3Moe}Model) instance so the
@@ -1071,6 +1217,8 @@ def patch_qwen3_with_loop(
       ema_sched  : per_step_alphas (length must equal K)
       halt_tau   : if set, all damped/momentum/anderson strategies break early
                    when ||Δx|| / ||x|| < halt_tau (per outer iteration).
+      anchor_rescale : layer_anchored_frozen only; rescale each layer's post-blend
+                   output to the per-token norm of its natural pass.
     """
     inner = model.model if hasattr(model, "model") else model
     inner._loop_indices = list(loop_indices)
@@ -1082,6 +1230,7 @@ def patch_qwen3_with_loop(
     inner._loop_anderson_m = int(anderson_m)
     inner._loop_anderson_beta = float(anderson_beta)
     inner._loop_anchor_beta = float(anchor_beta)
+    inner._loop_anchor_rescale = bool(anchor_rescale)
     inner._loop_per_step_alphas = (
         [float(a) for a in per_step_alphas] if per_step_alphas is not None else None
     )
@@ -1096,6 +1245,10 @@ def patch_qwen3_with_loop(
     inner._loop_decode_count = 0
 
     model_type = getattr(inner.config, "model_type", "qwen3")
+    if strategy == "layer_anchored_frozen":
+        if model_type == "qwen2_moe":
+            raise NotImplementedError("layer_anchored_frozen is implemented for qwen3 / qwen3_moe only")
+        _install_routing_hooks(inner, loop_indices)
     if model_type == "qwen3_moe":
         inner.forward = MethodType(_looped_forward_moe, inner)
     elif model_type == "qwen2_moe":
@@ -1123,6 +1276,10 @@ def describe_loop(model) -> str:
         parts.append(f"alpha={inner._loop_ema_alpha}")
     if s == "heavy_ball":
         parts.append(f"beta={inner._loop_momentum_beta}")
+    if s in ("block_anchored", "per_layer_anchored", "layer_anchored_frozen"):
+        parts.append(f"beta={inner._loop_anchor_beta}")
+    if s == "layer_anchored_frozen" and getattr(inner, "_loop_anchor_rescale", False):
+        parts.append("anchor_rescale")
     if s == "anderson":
         parts.append(f"m={inner._loop_anderson_m} beta={inner._loop_anderson_beta}")
     if s == "ema_sched":

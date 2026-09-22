@@ -62,11 +62,15 @@ def main():
                              "midpoint", "heun", "rk4",
                              "ema_sched", "heavy_ball", "anderson", "aitken",
                              "norm_stab", "poly_blend", "input_anchor", "uniform",
-                             "per_layer_anchored", "block_anchored"],
+                             "per_layer_anchored", "block_anchored",
+                             "layer_anchored_frozen"],
                     default="naive")
     ap.add_argument("--anchor-beta", type=float, default=0.0,
-                    help="block_anchored / per_layer_anchored: anchor weight β "
+                    help="block_anchored / per_layer_anchored / layer_anchored_frozen: anchor weight β "
                          "on natural g(h_in) (β=0 = pure damped Euler)")
+    ap.add_argument("--anchor-rescale", action="store_true",
+                    help="layer_anchored_frozen: rescale each layer's post-blend output "
+                         "to the per-token norm of its natural pass")
     ap.add_argument("--ema-alpha", type=float, default=0.5)
     ap.add_argument("--momentum-beta", type=float, default=0.3)
     ap.add_argument("--anderson-m", type=int, default=2)
@@ -113,6 +117,7 @@ def main():
             decode_mode=args.decode_mode,
             decode_first_n=args.decode_first_n,
             anchor_beta=args.anchor_beta,
+            anchor_rescale=args.anchor_rescale,
         )
         print(f"[{args.tag}] patched: {describe_loop(model)}")
     else:
@@ -152,6 +157,7 @@ def main():
             "K": args.K,
             "strategy": args.strategy,
             "anchor_beta": args.anchor_beta,
+            "anchor_rescale": args.anchor_rescale,
             "loop_mode": args.loop_mode,
             "cache_strategy": args.cache_strategy,
             "decode_mode": args.decode_mode,

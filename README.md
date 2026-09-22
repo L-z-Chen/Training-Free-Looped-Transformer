@@ -63,6 +63,7 @@ response.
 | `loop_qwen3.py` | The runtime patch. `patch_qwen3_with_loop(...)` auto-dispatches on `config.model_type` (dense `qwen3` → `_looped_forward`, `qwen3_moe` → `_looped_forward_moe`). Implements multiple looping strategies; the recipe above uses `block_anchored`. ~1100 lines. |
 | `run_eval.py`   | CLI evaluation driver wrapping `lm-eval-harness`. Loads the model, applies the patch if `--K > 0`, runs the tasks, writes one JSON per tag. |
 | `reproduce.py`  | One-command driver: applies the recipe to both target models on the 16-task suite. |
+| `vllm_loop/`    | vLLM port of `layer_anchored_frozen` for Qwen3-MoE plus the AIME26 sampling harness — see [AIME26 with vLLM](#aime26-with-vllm-vllm_loop). |
 | `README.md`     | This file. |
 | `results/`      | (created on first run) per-tag JSON output. |
 
@@ -198,8 +199,16 @@ in-place; no weights are touched).
 
 `--strategy` accepts:
 `naive`, `euler`, `midpoint`, `heun`, `rk4`, `uniform`,
-`per_layer_anchored`, `block_anchored`, `ema`, `ema_sched`, `heavy_ball`,
-`anderson`, `aitken`.
+`per_layer_anchored`, `block_anchored`, `layer_anchored_frozen`, `ema`,
+`ema_sched`, `heavy_ball`, `anderson`, `aitken`.
+
+`layer_anchored_frozen` (dense `qwen3` and `qwen3_moe`) loops each window layer
+separately: a natural pass captures the MoE routing and writes the layer's KV, then
+K−1 damped-Euler iterations re-run the layer with the routing frozen and each
+iterate's per-token norm rescaled onto a line from `|x|` to `|L(x)|`; the layer
+output is `β·natural + (1−β)·h`. `--anchor-rescale` additionally rescales that blend
+to `|natural|` (off by default — it measured worse). Freezing matters on MoE: without
+it 28–37% of window tokens change their top-8 expert set after one iteration.
 
 See the docstring at the top of `loop_qwen3.py` for the formula used by each
 strategy and the additional flags it consumes (`--ema-alpha`,
@@ -228,6 +237,59 @@ strategy and the additional flags it consumes (`--ema-alpha`,
 
 ---
 
+## AIME26 with vLLM (`vllm_loop/`)
+
+Generative reasoning needs the loop on every decode token, which the HF path makes
+slow (~45 tok/s per sequence). `vllm_loop/` ports `layer_anchored_frozen` to vLLM as
+the architecture `LoopedQwen3MoeForCausalLM`, registered through the
+`vllm.general_plugins` entry point, and adds an AIME26 avg@16 harness.
+
+```bash
+pip install -e vllm_loop            # into a venv with vLLM 0.29 (needs the venv's ninja on PATH)
+
+# one run = 30 problems x 16 samples, 4 engines x TP=2 on 8 GPUs, ~30 min
+vllm_loop/run_eval.sh base_s1 '{"K": 1}'                   16 1   # baseline
+vllm_loop/run_eval.sh loop_s1 '{"start": 29, "end": 33}'   16 1   # best config
+
+# problem-level paired comparison (pool runs with "+")
+python vllm_loop/panalyze.py base_s1+base_s2+base_s3 loop_s1+loop_s2+loop_s3
+```
+
+The config is `hf_overrides["loop_cfg"]`; `{"start": 29, "end": 33}` means window
+layers 29–32 with the defaults K=6, β=0.5, frozen routing and norm interpolation. The
+baseline is `{"K": 1}` — the same plugin with the loop disabled — because the plugin's
+full-state path is not bit-identical to stock vLLM. The docstring at the top of
+`looped_qwen3_moe.py` lists every other key; all of them default to off. Outputs go to
+`$LOOP_RUNS` (default `/mnt/loop_runs`, local SSD — full generations are large).
+
+### Result (Qwen3-30B-A3B, AIME26, avg@16, T=0.6, 32k new tokens)
+
+| config | runs | samples | accuracy | Δ vs baseline | paired 95% CI | p |
+|---|---:|---:|---:|---:|---|---:|
+| baseline `{"K": 1}` | 5 | 2400 | 71.42% | — | — | — |
+| window 29–32 | 6 | 2880 | 73.23% | +1.81 | [−0.18, +3.80] | 0.149 |
+
+The best configuration found raises AIME26 by about two points, but that is **not
+statistically significant** at the level the data supports. Things to know before
+reading any number from this harness:
+
+- **Test at the problem level.** The 16 samples of one problem share its difficulty,
+  so the effective n is 30 per run, not 480. A per-sample permutation test on the same
+  data gives p = 0.019; `panalyze.py`'s Wilcoxon over the 30 per-problem differences
+  gives p = 0.149.
+- **A seed does not reproduce a run.** vLLM's continuous batching makes the
+  floating-point reduction order timing-dependent; the identical config at the
+  identical seed gave 74.38 / 72.08 / 71.88 with 0 of 480 generations bit-identical.
+  Treat repeats as new observations and use 6+ runs per config.
+- **Single runs are noise.** The baseline alone spans 69.2–73.3 across 5 runs, and
+  every config that looked like a breakthrough after one run (up to +4.2) regressed
+  toward +2 on replication.
+- **On larger benchmarks the effect shrinks.** The same config gives +0.35 pts on
+  LiveCodeBench v5/v6 (342 problems, CI [−0.51, +1.21]) and +0.22 on a 1028-problem
+  Omni-MATH olympiad subset (CI [−0.81, +1.24]).
+
+---
+
 ## Requirements
 
 - Python ≥ 3.10
@@ -252,5 +314,12 @@ Training-Free-Looped-Transformers/
 ├── README.md          (this file)
 ├── loop_qwen3.py      patch + strategy library, ~1100 lines
 ├── run_eval.py        lm-eval-harness CLI driver, ~180 lines
-└── reproduce.py       one-command driver for the two target models
+├── reproduce.py       one-command driver for the two target models
+└── vllm_loop/
+    ├── pyproject.toml       plugin package (vllm.general_plugins entry point)
+    ├── looped_qwen3_moe.py  LoopedQwen3MoeForCausalLM: layer_anchored_frozen in vLLM
+    ├── veval.py             AIME26 avg@k on one engine shard
+    ├── run_eval.sh          4 engines x TP=2 launcher
+    ├── panalyze.py          problem-level paired comparison
+    └── aime_grader.py       lm-eval's AIME grader, vendored verbatim (MIT)
 ```
