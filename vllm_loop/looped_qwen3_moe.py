@@ -93,7 +93,10 @@ def _blend(anchor, other, w, mode):
     novelty : a + w * (|a|/|b|) * b / cos(theta)         -- novelty-scaled source
     """
     if mode == "linear" or w == 0.0:
-        return ((1.0 - w) * anchor.float() + w * other.float()).to(anchor.dtype)
+        # In the operands' dtype (bf16), as in the runs behind the README numbers. An fp32
+        # upcast here is a mathematical no-op, yet it changed every one of the 480
+        # generations of a seed-matched rerun -- keep it out of the default path.
+        return ((1.0 - w) * anchor + w * other).to(anchor.dtype)
     a, b = anchor.float(), other.float()
     na = a.norm(dim=-1, keepdim=True).clamp_min(1e-6)
     nb = b.norm(dim=-1, keepdim=True).clamp_min(1e-6)
