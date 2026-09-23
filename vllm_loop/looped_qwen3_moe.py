@@ -59,6 +59,10 @@ hf_overrides={"architectures": ["LoopedQwen3MoeForCausalLM"], "loop_cfg": {...}}
                     window and the layers above it. AIME26, window 29-32, seeds 1-3:
                     gamma=1 74.10%, gamma=2 74.24% vs the plain loop's 73.33% (+0.8/+0.9,
                     p=.29/.25) -- doubling gamma adds nothing, so the gain does not scale.
+    contrast_norm   with `contrast`: None (default) leaves the extrapolated norm as it falls;
+                    "loop" rescales it to |o_loop| (direction only -- raw extrapolation
+                    lengthens the state, which sharpens the logits like a lower
+                    temperature); "extrap" to |o_loop| + gamma (|o_loop| - |o_nat|).
 
 Per window layer (x = full hidden state, i.e. hidden + residual):
     natural = L(x)                       # writes this layer's KV, yields router logits
@@ -80,6 +84,7 @@ import torch
 DEBUG_NAN = os.environ.get("LOOP_DEBUG_NAN") == "1"
 LOG_DIVERGENCE = os.environ.get("LOOP_LOG_DIVERGENCE") == "1"
 _div_logged = [0]
+_contrast_logged = [0]
 
 from vllm.model_executor.layers.attention.attention import unified_kv_cache_update
 from vllm.model_executor.models.qwen3_moe import Qwen3MoeForCausalLM
@@ -490,7 +495,28 @@ def _looped_model_forward(self, input_ids, positions, intermediate_tensors=None,
         keep(j, hidden, residual)
     out, _ = self.norm(hidden, residual)
     if nat_out is not None:
-        out = out + gamma * (out - nat_out)
+        mix = out + gamma * (out - nat_out)
+        if (LOG_DIVERGENCE and _contrast_logged[0] < 12
+                and not torch.cuda.is_current_stream_capturing()):
+            # how much the raw extrapolation lengthens the state (= sharpens the logits)
+            ratio = mix.float().norm(dim=-1) / out.float().norm(dim=-1).clamp_min(1e-6)
+            if float(ratio.max()) > 0:
+                _contrast_logged[0] += 1
+                qs = torch.tensor([.1, .5, .9, .99], device=ratio.device)
+                v = torch.quantile(ratio, qs).tolist()
+                print(f"CONTRAST_NORM_RATIO n={ratio.numel()} p10={v[0]:.4f} p50={v[1]:.4f} "
+                      f"p90={v[2]:.4f} p99={v[3]:.4f}", flush=True)
+        norm_mode = cfg.get("contrast_norm")
+        if norm_mode is not None:
+            n_loop = out.float().norm(dim=-1, keepdim=True)
+            if norm_mode == "loop":
+                mix = _rescale(mix, n_loop)
+            elif norm_mode == "extrap":
+                n_nat = nat_out.float().norm(dim=-1, keepdim=True)
+                mix = _rescale(mix, n_loop + gamma * (n_loop - n_nat))
+            else:
+                raise ValueError(f"unknown contrast_norm {norm_mode!r}")
+        out = mix
     if recirc:
         _recirculate(self, positions, split, full[dst], full[src], cfg, loop_layers, depth_of)
     return out
