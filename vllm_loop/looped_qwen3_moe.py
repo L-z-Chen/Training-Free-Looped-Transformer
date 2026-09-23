@@ -52,6 +52,11 @@ hf_overrides={"architectures": ["LoopedQwen3MoeForCausalLM"], "loop_cfg": {...}}
     ensemble        N: replace the damped-Euler chain with N parallel evaluations of the
                     layer at s_k = k/(N+1) along [natural, x], averaged. Same compute as
                     K=N; tests whether the gain is variance reduction, not a fixed point.
+    contrast        gamma: contrastive output, out = o_loop + gamma (o_loop - o_nat), where
+                    o_nat is the un-looped path from the window to the final norm (single
+                    window). Logits are linear in the normed state, so this extrapolates
+                    the loop's effect on the log-probs; costs one extra pass of the
+                    window and the layers above it.
 
 Per window layer (x = full hidden state, i.e. hidden + residual):
     natural = L(x)                       # writes this layer's KV, yields router logits
@@ -424,6 +429,21 @@ def _recirculate(self, positions, split_d, z_d, z_s, cfg, loop_layers, depth_of)
         mix = (1.0 - a) * zd + a * src2 if cfg.get("recirc_convex", True) else zd + a * src2
 
 
+def _natural_tail(self, positions, x, start, end):
+    """The un-looped path from window layer `start` through the final norm (`contrast`).
+
+    Same computation as the K=1 path. It runs before the looped path, whose KV writes for
+    these layers therefore land last and are the ones left in the cache.
+    """
+    for j in range(start, end):
+        x = _layer_full(self.layers[j], positions, x)[0]
+    hidden, residual = x, None
+    for j in range(end, self.end_layer):
+        hidden, residual = self.layers[j](positions, hidden, residual)
+    out, _ = self.norm(hidden, residual)
+    return out
+
+
 def _looped_model_forward(self, input_ids, positions, intermediate_tensors=None, inputs_embeds=None):
     cfg = self._loop_cfg
     hidden = inputs_embeds if inputs_embeds is not None else self.embed_input_ids(input_ids)
@@ -442,12 +462,19 @@ def _looped_model_forward(self, input_ids, positions, intermediate_tensors=None,
     windows = _windows(cfg)
     loop_layers = {j for a, b in windows for j in range(a, b)}
     depth_of = {j: (j - a, b - a) for a, b in windows for j in range(a, b)}
+    gamma = float(cfg.get("contrast") or 0.0)
+    if gamma:
+        assert len(windows) == 1 and cfg["mode"] == "layer" and not recirc, \
+            "contrast supports one window in layer mode, without recirculation"
+    nat_out = None
     i = self.start_layer
     for start, end in windows:
         for j in range(i, start):
             hidden, residual = self.layers[j](positions, hidden, residual)
             keep(j, hidden, residual)
         x = hidden if residual is None else hidden + residual
+        if gamma:
+            nat_out = _natural_tail(self, positions, x, start, end)
         if cfg["mode"] == "block":
             x = _block_loop([self.layers[j] for j in range(start, end)], positions, x, cfg)
             keep(end - 1, x, None)
@@ -460,6 +487,8 @@ def _looped_model_forward(self, input_ids, positions, intermediate_tensors=None,
         hidden, residual = self.layers[j](positions, hidden, residual)
         keep(j, hidden, residual)
     out, _ = self.norm(hidden, residual)
+    if nat_out is not None:
+        out = out + gamma * (out - nat_out)
     if recirc:
         _recirculate(self, positions, split, full[dst], full[src], cfg, loop_layers, depth_of)
     return out
