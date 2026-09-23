@@ -56,7 +56,9 @@ hf_overrides={"architectures": ["LoopedQwen3MoeForCausalLM"], "loop_cfg": {...}}
                     o_nat is the un-looped path from the window to the final norm (single
                     window). Logits are linear in the normed state, so this extrapolates
                     the loop's effect on the log-probs; costs one extra pass of the
-                    window and the layers above it.
+                    window and the layers above it. AIME26, window 29-32, seeds 1-3:
+                    gamma=1 74.10%, gamma=2 74.24% vs the plain loop's 73.33% (+0.8/+0.9,
+                    p=.29/.25) -- doubling gamma adds nothing, so the gain does not scale.
 
 Per window layer (x = full hidden state, i.e. hidden + residual):
     natural = L(x)                       # writes this layer's KV, yields router logits
