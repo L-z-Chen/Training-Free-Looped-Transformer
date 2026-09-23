@@ -277,20 +277,28 @@ statistically significant** at the level the data supports.
 
 ### Reproduction from this code
 
-The two commands above, run verbatim on 2026-09-23 for seeds 1–3:
+The two commands above, run verbatim on 2026-09-23 (seeds 1–3 repeat the original runs;
+seed 4 is the original run, same arithmetic; seeds 5–6 are new):
 
 | seed | baseline | window 29–32 | Δ | samples identical to the original run (baseline / loop) |
 |---:|---:|---:|---:|---|
 | 1 | 70.21 | 73.54 | +3.33 | 478 / 346 of 480 |
 | 2 | 73.33 | 73.96 | +0.63 | 461 / 273 of 480 |
 | 3 | 71.46 | 72.50 | +1.04 | 480 / 326 of 480 |
-| all | 71.67 | 73.33 | **+1.67** | paired 95% CI [−0.75, +4.08], p = 0.365 |
+| 4 | 69.17 | 73.33 | +4.17 | (original runs) |
+| 5 | 71.67 | 71.88 | +0.21 | new seed |
+| 6 | 74.58 | 73.75 | −0.83 | new seed |
+| all 6 | 71.74 | 73.16 | **+1.42** | paired 95% CI [−0.87, +3.72], p = 0.935 |
 
 The same code at the same seed regenerates most samples token-for-token; the rest split
 late in long chains and are drawn anew. Each loop rerun came out 0.4–0.8 below its
-original, as expected if the originals — the runs that singled this config out — were
-partly lucky, since only the re-drawn part can regress. The effect reproduces at about
-+1.7 and remains non-significant.
+original, and the two new seeds add +0.2 and −0.8: the estimate keeps shrinking as seeds
+accumulate (+2.44 over the first 4 → +1.81 over 6 runs → +1.42 over 6 seeds).
+
+The mean is carried by three problems. Problems 9, 26 and 27 rise from ~33% to ~50%
+(+15 to +21 pts each) and account for +1.88 of the +1.42; over the other 27 problems the
+loop is −0.46, with more problems worse (13) than better (9). That is why the signed-rank
+test, which weighs every problem equally, finds nothing (p = 0.935).
 
 Things to know before reading any number from this harness:
 
