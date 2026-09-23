@@ -12,8 +12,14 @@ changes all 480 within the first few hundred characters: it acts as a new seed.
 
 `cfg_json` is the plugin's loop config (see looped_qwen3_moe.py); `null` runs the stock
 model, and {"K": 1} runs the plugin with the loop disabled, which is the baseline the
-reported numbers use. Output: $LOOP_RUNS/<run_name>/shard<i>.jsonl (default
+reported numbers use. A config with "generic": true goes to looped_generic.py instead
+(any supported MoE architecture; {"generic": true, "start": a, "end": a+1, "K": 1} is
+its loop-off baseline). Output: $LOOP_RUNS/<run_name>/shard<i>.jsonl (default
 /mnt/loop_runs, the local SSD; generations are large).
+
+Environment: AIME_MODEL (default Qwen/Qwen3-30B-A3B) and AIME_MAX_TOKENS (default 32768,
+the setting of every number in the README). Sampling follows each model's own
+recommendation (SAMPLING below).
 """
 import json
 import os
@@ -27,9 +33,17 @@ from vllm import LLM, SamplingParams
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import aime_grader  # noqa: E402
 
-MAX_TOKENS = 32768
-MAX_MODEL_LEN = 34000
+MODEL = os.environ.get("AIME_MODEL", "Qwen/Qwen3-30B-A3B")
+MAX_TOKENS = int(os.environ.get("AIME_MAX_TOKENS", 32768))
+MAX_MODEL_LEN = MAX_TOKENS + 1232          # 34000 at the default 32768
 PROMPT = "{p}\n\nPlease reason step by step, and put your final answer within \\boxed{{}}."
+# each model's recommended sampling for its reasoning mode (model card / generation_config)
+SAMPLING = {
+    "Qwen/Qwen3-30B-A3B": dict(temperature=0.6, top_p=0.95, top_k=20),
+    "openai/gpt-oss-20b": dict(temperature=1.0, top_p=1.0),
+    "baidu/ERNIE-4.5-21B-A3B-Thinking": dict(temperature=0.6, top_p=0.95),
+    "moonshotai/Kimi-VL-A3B-Thinking-2506": dict(temperature=0.6),
+}
 
 
 def main():
@@ -40,11 +54,15 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ds = load_dataset("math-ai/aime26")["test"]
-    kw = dict(model="Qwen/Qwen3-30B-A3B", dtype="bfloat16", max_model_len=MAX_MODEL_LEN,
+    kw = dict(model=MODEL, dtype="bfloat16", max_model_len=MAX_MODEL_LEN,
               gpu_memory_utilization=0.92, enable_prefix_caching=False,
               tensor_parallel_size=tp, seed=0,
               compilation_config={"mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY"})
-    if cfg is not None:
+    if "Kimi-VL" in MODEL:                 # text-only use of a vision-language model
+        kw.update(trust_remote_code=True, limit_mm_per_prompt={"image": 0})
+    if cfg is not None and cfg.get("generic"):
+        kw["hf_overrides"] = {"gloop": {k: v for k, v in cfg.items() if k != "generic"}}
+    elif cfg is not None:
         kw["hf_overrides"] = {"architectures": ["LoopedQwen3MoeForCausalLM"], "loop_cfg": cfg}
     llm = LLM(**kw)
     tok = llm.get_tokenizer()
@@ -54,8 +72,8 @@ def main():
                                        add_generation_prompt=True, tokenize=False)
                for i, _ in reqs]
     seed = lambda i, j: seed_base * 1_000_000 + i * 1000 + j
-    params = [SamplingParams(temperature=0.6, top_p=0.95, top_k=20, max_tokens=MAX_TOKENS,
-                             seed=seed(i, j)) for i, j in reqs]
+    params = [SamplingParams(**SAMPLING[MODEL], max_tokens=MAX_TOKENS, seed=seed(i, j))
+              for i, j in reqs]
     t0 = time.time()
     outs = llm.generate(prompts, params)
     dt = time.time() - t0
@@ -63,14 +81,15 @@ def main():
         for (i, j), o in zip(reqs, outs):
             c = o.outputs[0]
             ok = aime_grader.process_results({"answer": ds[i]["answer"]}, [c.text])["exact_match"]
-            fh.write(json.dumps({"run": name, "cfg": cfg, "problem_idx": i, "sample": j,
+            fh.write(json.dumps({"run": name, "model": MODEL, "cfg": cfg, "problem_idx": i, "sample": j,
                                  "seed": seed(i, j), "correct": ok,
                                  "n_gen_tokens": len(c.token_ids), "finish_reason": c.finish_reason,
                                  "truncated": len(c.token_ids) >= MAX_TOKENS, "text": c.text},
                                 ensure_ascii=False) + "\n")
     ntok = sum(len(o.outputs[0].token_ids) for o in outs)
     (out_dir / f"shard{shard}.meta.json").write_text(
-        json.dumps({"elapsed_s": dt, "requests": len(reqs), "tokens": ntok}))
+        json.dumps({"elapsed_s": dt, "requests": len(reqs), "tokens": ntok, "model": MODEL,
+                    "max_tokens": MAX_TOKENS, "sampling": SAMPLING[MODEL]}))
     print(f"DONE {name} shard {shard}: {len(reqs)} requests, {ntok} tokens in {dt:.0f}s")
 
 

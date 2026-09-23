@@ -6,7 +6,8 @@
 #
 #   VLLM_PY    python of the venv that has vLLM and this plugin (pip install -e vllm_loop)
 #   LOOP_RUNS  output root (default /mnt/loop_runs, the local SSD)
-#   GPU_PAIRS  subset of the node, e.g. GPU_PAIRS="2,3 4,5 6,7"
+#   GPU_PAIRS  GPU groups, one engine each (TP = group size), e.g. "2,3 4,5 6,7" or "0,1,2,3 4,5,6,7"
+#   AIME_MODEL, AIME_MAX_TOKENS  passed through to veval.py
 set -u
 NAME=$1; CFG=$2; K=$3; SEED=$4
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -21,7 +22,8 @@ PAIRS=${GPU_PAIRS:-"0,1 2,3 4,5 6,7"}
 NSH=$(echo $PAIRS | wc -w)
 pids=""; s=0
 for pair in $PAIRS; do
-  CUDA_VISIBLE_DEVICES=$pair nohup "$PY" "$HERE/veval.py" "$NAME" "$CFG" "$K" "$SEED" $s $NSH 2 \
+  TP=$(echo "$pair" | tr ',' '\n' | wc -l)      # one engine per GPU group, TP = its size
+  CUDA_VISIBLE_DEVICES=$pair nohup "$PY" "$HERE/veval.py" "$NAME" "$CFG" "$K" "$SEED" $s $NSH $TP \
     < /dev/null > "$OUT/shard$s.log" 2>&1 &
   pids="$pids $!"; s=$((s+1))
 done
