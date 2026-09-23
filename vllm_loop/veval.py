@@ -5,9 +5,10 @@ usage: veval.py <run_name> <cfg_json|null> <k> <seed_base> <shard> <nshards> <tp
 Sampling follows Qwen3's thinking-mode recommendation (T=0.6, top_p=0.95, top_k=20),
 32768 new tokens max, graded with lm-eval's AIME grader (vendored in aime_grader.py).
 Seeds depend only on (seed_base, problem, sample), so different configs see the same
-random streams -- but vLLM's continuous batching makes the floating-point reduction
-order timing-dependent, so the same config at the same seed does not reproduce
-bit-for-bit; a repeat is a fresh observation, not a replica.
+random streams. A rerun of the same code at the same seed regenerates most samples
+token-for-token (baseline 461-480 of 480, the loop 273-364, the rest splitting late in
+long chains), but any change to the arithmetic -- even an fp32 upcast of a blend --
+changes all 480 within the first few hundred characters: it acts as a new seed.
 
 `cfg_json` is the plugin's loop config (see looped_qwen3_moe.py); `null` runs the stock
 model, and {"K": 1} runs the plugin with the loop disabled, which is the baseline the

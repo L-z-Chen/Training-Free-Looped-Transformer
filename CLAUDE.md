@@ -161,6 +161,9 @@ peaks at 4 layers (2, 3, 5, 6, 8 layers are all worse).
 - The loop runs on every token, prefill and decode. After the iterations the natural
   pass's K/V is written back with `unified_kv_cache_update`, so later tokens attend to
   un-iterated keys (the `kv` key switches this). β=1 is bit-exact with K=1.
+- The damped-Euler steps and the β blend run in the model dtype (bf16), as in the HF
+  implementation and in the runs the README reports; `_blend` must not upcast them, or
+  the committed code stops regenerating those runs.
 - vLLM's fused add-RMSNorm mutates `hidden`/`residual` in place: any code that reuses
   those tensors for a second pass (recirculation, ensembles) must clone them first.
 - Anything that syncs the device (`.item()`, `float(t)`) is illegal while vLLM captures
@@ -177,9 +180,12 @@ peaks at 4 layers (2, 3, 5, 6, 8 layers are all worse).
 
 - The baseline is `{"K": 1}`, not stock vLLM (`null`): the plugin's full-state path is
   not bit-identical to stock.
-- Same config + same seed does **not** reproduce: continuous batching makes reductions
-  timing-dependent and a 32k-token chain fully decorrelates (0/480 identical). Repeats
-  are fresh observations; one config needs 6+ runs.
+- Same code + same seed largely reproduces: 461–480/480 generations identical for the
+  baseline, 273–364/480 for the loop (the rest split late in long chains). Any change
+  to the arithmetic re-randomizes all 480 — computing the blends in fp32 instead of
+  bf16 split every generation, at a median of ~550 characters — so a numerics change
+  is a new seed, not a replica. Seeds still vary a run by ±1.5 pts; one config needs
+  6+ seeds.
 - Test at the **problem** level (`panalyze.py`, Wilcoxon over 30 differences). A
   per-sample test treats 16 samples of one problem as independent and overstates
   significance ~100x in effective n.

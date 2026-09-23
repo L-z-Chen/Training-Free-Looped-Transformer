@@ -266,21 +266,43 @@ full-state path is not bit-identical to stock vLLM. The docstring at the top of
 
 | config | runs | samples | accuracy | Δ vs baseline | paired 95% CI | p |
 |---|---:|---:|---:|---:|---|---:|
-| baseline `{"K": 1}` | 5 | 2400 | 71.42% | — | — | — |
+| baseline (loop off) | 5 | 2400 | 71.42% | — | — | — |
 | window 29–32 | 6 | 2880 | 73.23% | +1.81 | [−0.18, +3.80] | 0.149 |
 
+Baseline runs: `{"K": 1}` at seeds 1–4 and `{"windows": []}` at seed 1. Window 29–32:
+seeds 1–4, plus two seed-1 reruns made with a plugin revision that did its blends in fp32.
+
 The best configuration found raises AIME26 by about two points, but that is **not
-statistically significant** at the level the data supports. Things to know before
-reading any number from this harness:
+statistically significant** at the level the data supports.
+
+### Reproduction from this code
+
+The two commands above, run verbatim on 2026-09-23 for seeds 1–3:
+
+| seed | baseline | window 29–32 | Δ | samples identical to the original run (baseline / loop) |
+|---:|---:|---:|---:|---|
+| 1 | 70.21 | 73.54 | +3.33 | 478 / 346 of 480 |
+| 2 | 73.33 | 73.96 | +0.63 | 461 / 273 of 480 |
+| 3 | 71.46 | 72.50 | +1.04 | 480 / 326 of 480 |
+| all | 71.67 | 73.33 | **+1.67** | paired 95% CI [−0.75, +4.08], p = 0.365 |
+
+The same code at the same seed regenerates most samples token-for-token; the rest split
+late in long chains and are drawn anew. Each loop rerun came out 0.4–0.8 below its
+original, as expected if the originals — the runs that singled this config out — were
+partly lucky, since only the re-drawn part can regress. The effect reproduces at about
++1.7 and remains non-significant.
+
+Things to know before reading any number from this harness:
 
 - **Test at the problem level.** The 16 samples of one problem share its difficulty,
   so the effective n is 30 per run, not 480. A per-sample permutation test on the same
   data gives p = 0.019; `panalyze.py`'s Wilcoxon over the 30 per-problem differences
   gives p = 0.149.
-- **A seed does not reproduce a run.** vLLM's continuous batching makes the
-  floating-point reduction order timing-dependent; the identical config at the
-  identical seed gave 74.38 / 72.08 / 71.88 with 0 of 480 generations bit-identical.
-  Treat repeats as new observations and use 6+ runs per config.
+- **Arithmetic acts like a seed.** Any change to the numerics re-randomizes every
+  sample within its first few hundred characters: the fp32-blend revision above,
+  identical in exact arithmetic, shared 0 of 480 samples with the bf16 run it
+  repeated. A run after such a change is a fresh observation, not a replica. The
+  plugin keeps the blends in bf16 so that this code regenerates the runs reported here.
 - **Single runs are noise.** The baseline alone spans 69.2–73.3 across 5 runs, and
   every config that looked like a breakthrough after one run (up to +4.2) regressed
   toward +2 on replication.
