@@ -168,6 +168,15 @@ peaks at 4 layers (2, 3, 5, 6, 8 layers are all worse).
   those tensors for a second pass (recirculation, ensembles) must clone them first.
 - Anything that syncs the device (`.item()`, `float(t)`) is illegal while vLLM captures
   the decode CUDA graph; guard it with `torch.cuda.is_current_stream_capturing()`.
+- `looped_generic.py` is the architecture-agnostic port of the default config, enabled
+  with `hf_overrides={"gloop": {...}}` (no architecture override). It wraps the stock
+  classes' `__init__` (keeping the signature: vLLM inspects it to pick the constructor
+  call) and patches the window layers before CUDA graph capture; each pass calls the
+  layer's own forward on the full stream (clone it: the fused add-norm writes into the
+  residual argument), routing is frozen by a hook on `mlp.gate`/`mlp.router`, and one
+  more natural pass rewrites the K/V. Validate a new architecture with `gloop_check.py`
+  (β=1 must equal K=1 token for token, run as the second engine of a process — some
+  models, e.g. ERNIE, are not deterministic across engines at all).
 - Most config keys (gating, recirculation, ensembles, β heads, step schedules, …) are
   experiments that did not beat the plain config; all default to off, and none should
   be turned on without re-reading the measured results in the README.

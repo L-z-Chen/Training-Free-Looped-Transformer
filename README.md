@@ -318,6 +318,36 @@ Things to know before reading any number from this harness:
   LiveCodeBench v5/v6 (342 problems, CI [−0.51, +1.21]) and +0.22 on a 1028-problem
   Omni-MATH olympiad subset (CI [−0.81, +1.24]).
 
+
+### Other MoE models (64k decode)
+
+`vllm_loop/looped_generic.py` applies the same loop — K=6, β=0.5, frozen routing, norm
+interpolation, bf16 blends — to other vLLM MoE architectures by patching the window
+layers of the stock model class. The window sits at the relative depth of the Qwen
+optimum (start ≈ 0.6·L, width ≈ L/12). AIME26 avg@16, 65,536 new tokens, each model's
+recommended sampling, same prompt, 2 seeds per config:
+
+| model | layers | window | baseline | loop | Δ | paired 95% CI | p |
+|---|---:|---|---:|---:|---:|---|---:|
+| gpt-oss-20b (medium effort) | 24 | 14–15 | 79.17% | 78.02% | −1.15 | [−3.56, +1.27] | 0.253 |
+| ERNIE-4.5-21B-A3B-Thinking | 28 | 17–18 | 70.31% | 68.02% | −2.29 | [−5.80, +1.22] | 0.324 |
+| Kimi-VL-A3B-Thinking-2506 | 27 | 16–17 | 43.75% | 43.23% | −0.52 | [−3.13, +2.09] | 0.807 |
+
+The recipe does not transfer: 5 of the 6 seed pairs come out below baseline and none of
+the three models gains.
+
+```bash
+export AIME_MODEL=openai/gpt-oss-20b AIME_MAX_TOKENS=65536
+vllm_loop/run_eval.sh gptoss_base_s1 '{"generic": true, "start": 14, "end": 16, "K": 1}' 16 1
+vllm_loop/run_eval.sh gptoss_loop_s1 '{"generic": true, "start": 14, "end": 16}'         16 1
+python vllm_loop/gloop_check.py openai/gpt-oss-20b 14 16      # port check, see below
+```
+
+`gloop_check.py` requires K=6 at β=1 to reproduce K=1 token for token (the output is then
+the natural pass, so any difference means the routing capture or the K/V write-back is
+wrong). It passes on Qwen3-30B-A3B, gpt-oss-20b and Kimi-VL; on ERNIE the check cannot
+decide, because its greedy output already changes from one engine to the next at K=1.
+
 ---
 
 ## Requirements
@@ -348,8 +378,10 @@ Training-Free-Looped-Transformers/
 └── vllm_loop/
     ├── pyproject.toml       plugin package (vllm.general_plugins entry point)
     ├── looped_qwen3_moe.py  LoopedQwen3MoeForCausalLM: layer_anchored_frozen in vLLM
+    ├── looped_generic.py    the default loop for other MoE architectures ("gloop")
+    ├── gloop_check.py       beta=1 vs K=1 token-for-token check of the generic port
     ├── veval.py             AIME26 avg@k on one engine shard
-    ├── run_eval.sh          4 engines x TP=2 launcher
+    ├── run_eval.sh          one engine per GPU group (4 x TP=2 by default)
     ├── panalyze.py          problem-level paired comparison
     └── aime_grader.py       lm-eval's AIME grader, vendored verbatim (MIT)
 ```
