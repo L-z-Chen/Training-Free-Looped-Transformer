@@ -362,6 +362,56 @@ the natural pass, so any difference means the routing capture or the K/V write-b
 wrong). It passes on Qwen3-30B-A3B, gpt-oss-20b and Kimi-VL; on ERNIE the check cannot
 decide, because its greedy output already changes from one engine to the next at K=1.
 
+
+### Why the effect is small (root-cause probe)
+
+**It is a re-discretization, not extra depth.** A window layer returns L(h) = h + Δ(h), so
+the damped step h ← (1−s)h + s·L(h) is h ← h + s·Δ(h): Euler integration of dh/dt = Δ(h).
+With s = 1/K over K steps the integration time is exactly 1, the same total update as the
+single natural pass, re-evaluated along the path. The difference is second order
+(≈ J_Δ·Δ): window outputs move ~2% from the natural pass, ~1% after the β = 0.5 anchor.
+
+**It only touches uncertain tokens and has no preference for correct reasoning.**
+Teacher-forced on 17 baseline traces (97k positions; K=1 vs the loop, top-20 logprobs):
+
+| natural next-token entropy | share of positions | mean KL (nats) | share of total KL | top-1 token changed |
+|---|---:|---:|---:|---:|
+| < 0.05 | 61% | 0.00002 | 1% | 0.00% |
+| 0.05–0.3 | 11% | 0.0012 | 8% | 0.01% |
+| 0.3–1.0 | 21% | 0.0045 | 56% | 2.0% |
+| 1.0–2.0 | 7% | 0.0078 | 35% | 6.7% |
+
+Mean KL is 0.0016 nats per token. Where the loop acts it slightly sharpens the distribution
+(entropy −0.004 to −0.007, about the effect of T = 0.6 → 0.598), and it raises the tokens
+of correct traces no more than those of wrong ones (Δlog p of the taken token at H ≥ 0.3:
+−0.0029 ± 0.0008 vs −0.0033 ± 0.0007). Its accuracy effect is therefore mostly re-sampling,
+plus a real shift on a few bimodal problems where the model splits between one trap and
+the answer: problem 9 (103 vs 156), problem 27 (12 vs 107), and problem 26 (truncation vs
+223) move 15–21 pts toward the answer over six seeds, while the other 27 problems net
+−0.46. Stronger settings push the states off the distribution the layers above were
+trained on (window 22–25: T = 3 or β = −1 lower accuracy on non-truncated samples
+from 76.8% to 68.5% and 71.9%).
+
+**Targeted fixes (32k, seeds 1–3, baseline 71.67%, plain loop 73.33%):**
+
+| config | accuracy | Δ | p | truncation | problems 9, 26, 27 |
+|---|---:|---:|---:|---:|---:|
+| baseline | 71.67% | — | — | 7.2% | 30.6% |
+| plain loop (T = 1) | 73.33% | +1.67 | 0.365 | 7.8% | 48.6% |
+| `ent_gate` [0.3, 1], β 1 → 0 | 73.33% | +1.67 | 0.136 | 7.0% | 45.1% |
+| `ent_gate` [0.3, 1], β 1 → −0.5 | 71.67% | 0.00 | 0.360 | 8.0% | 46.5% |
+| T = 2 (`step` 1/3) | 73.68% | +2.01 | 0.694 | 9.0% | **59.7%** |
+
+Concentrating a stronger correction on uncertain tokens does not help: the fork shift is
+not made at those tokens. Doubling the integration time does. Problem 9 goes from
+29% to 77%, and 26, 22 and 27 rise too. But the longer chains truncate more, and −1.94 of
+T = 2's −2.08 points of losses fall on problems whose truncation rose. The 64k follow-up
+(static YaRN ×2, `AIME_ROPE_YARN=2 AIME_MAX_TOKENS=64000`) tests whether the gains
+survive once that cap is lifted.
+
+The raw generations behind this section and the two above were on the VM's local SSD,
+which was wiped when the VM restarted on 2026-09-24; the numbers here are what remains.
+
 ---
 
 ## Requirements
