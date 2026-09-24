@@ -334,7 +334,21 @@ recommended sampling, same prompt, 2 seeds per config:
 | Kimi-VL-A3B-Thinking-2506 | 27 | 16–17 | 43.75% | 43.23% | −0.52 | [−3.13, +2.09] | 0.807 |
 
 The recipe does not transfer: 5 of the 6 seed pairs come out below baseline and none of
-the three models gains.
+the three models gains. Nor does it help to move the window. Sweeping it over each
+model (seed 1 as a screen; Δ vs that model's baseline mean; * = 2 seeds):
+
+| model (baseline, gap between its 2 runs) | width 2, by start layer | width 4, by start layer |
+|---|---|---|
+| gpt-oss-20b (79.17, 1.3) | 2: −0.2 · 5: −1.5 · 8: +1.0 · 11: −0.2 · 14*: −1.2 · 17: −0.8 · 20: −1.3 | 4: −1.9 · 10: −0.4 · 14: +1.2 · 18: −1.3 |
+| ERNIE-4.5-21B-A3B (70.31, 0.2) | 2: +0.5 · 5: −2.6 · 8: −0.9 · 11: −3.0 · 14: −1.6 · 17*: −2.3 · 20: −0.9 · 23: −3.7 · 25: −1.8 | 4: −4.1 · 10: −2.0 · 16: −2.8 · 22: −2.4 |
+| Kimi-VL-A3B-Thinking (43.75, 3.3) | 2: −1.9 · 5: +0.8 · 8*: +1.5 · 11: −1.9 · 13: −0.8 · 16*: −0.5 · 19: −0.4 · 22: −0.4 · 24: +1.9 | 4: +1.0 · 10: −2.9 · 16: −0.2 · 21: −1.3 |
+
+No window on any of the three models rises above run-to-run noise, and on ERNIE the loop
+hurts nearly everywhere (12 of 13 windows negative, mean −2.2). One effect is real, but it
+is not accuracy: on Kimi-VL, looping layers 8–9 shortens the reasoning — truncation at
+64k drops from 13.5% to 5.7% (19 problems lower, 5 higher, p = 0.0004) and mean length
+from 18.8k to 15.3k tokens (p = 0.007), on both seeds, while accuracy stays level
+(+1.46, p = 0.57).
 
 ```bash
 export AIME_MODEL=openai/gpt-oss-20b AIME_MAX_TOKENS=65536
