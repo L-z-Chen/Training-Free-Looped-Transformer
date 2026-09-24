@@ -59,6 +59,13 @@ hf_overrides={"architectures": ["LoopedQwen3MoeForCausalLM"], "loop_cfg": {...}}
                     window and the layers above it. AIME26, window 29-32, seeds 1-3:
                     gamma=1 74.10%, gamma=2 74.24% vs the plain loop's 73.33% (+0.8/+0.9,
                     p=.29/.25) -- doubling gamma adds nothing, so the gain does not scale.
+    ent_gate        [h0, h1]: per-token loop strength from the entropy H (nats) of the natural
+                    pass's next-token distribution, g = clamp((H - h0) / (h1 - h0), 0, 1);
+                    the anchor weight becomes ent_beta_off + (ent_beta_on - ent_beta_off) g
+                    (defaults 1.0 and 0.0: natural where the model is sure, twice the
+                    default correction where it is not). The loop only moves uncertain
+                    tokens anyway (91% of its KL sits at H > 0.3), so this concentrates a
+                    stronger correction there. Single window; costs the natural tail pass.
     contrast_norm   with `contrast`: None (default) leaves the extrapolated norm as it falls;
                     "loop" rescales it to |o_loop| (direction only -- raw extrapolation
                     lengthens the state, which sharpens the logits like a lower
@@ -80,6 +87,9 @@ import os
 import types
 
 import torch
+from vllm.distributed import (get_tensor_model_parallel_rank,
+                              get_tensor_model_parallel_world_size,
+                              tensor_model_parallel_all_reduce)
 
 DEBUG_NAN = os.environ.get("LOOP_DEBUG_NAN") == "1"
 LOG_DIVERGENCE = os.environ.get("LOOP_LOG_DIVERGENCE") == "1"
@@ -167,7 +177,7 @@ def _layer_mlp_only(layer, x, a_nat, logits):
     return r + y
 
 
-def _loop_layer(layer, positions, x, cfg, depth=None):
+def _loop_layer(layer, positions, x, cfg, depth=None, beta_t=None):
     K, beta = int(cfg["K"]), float(cfg["beta"])
     if cfg.get("beta_ramp") and depth is not None:
         b0, b1 = (float(v) for v in cfg["beta_ramp"])   # linear beta across the window layers
@@ -292,6 +302,8 @@ def _loop_layer(layer, positions, x, cfg, depth=None):
             beta = torch.sigmoid(torch.nn.functional.linear(   # vLLM's loader then rejects
                 torch.cat([x, natural], -1).float(), hw, hb)).to(x.dtype)
             out = beta * natural + (1.0 - beta) * h
+        elif beta_t is not None:  # per-token anchor weight (ent_gate), bf16 like the default
+            out = beta_t * natural + (1.0 - beta_t) * h
         else:
             out = _blend(natural, h, 1.0 - beta, cfg.get("blend", "linear"))
         if cfg["anchor_rescale"]:
@@ -436,6 +448,28 @@ def _recirculate(self, positions, split_d, z_d, z_s, cfg, loop_layers, depth_of)
         mix = (1.0 - a) * zd + a * src2 if cfg.get("recirc_convex", True) else zd + a * src2
 
 
+def _next_token_entropy(self, h):
+    """Entropy (nats) of softmax(lm_head(h)) per token, from the vocab-parallel shards.
+
+    Each rank holds a slice of the vocabulary: it contributes its local log-sum-exp and its
+    local E[logit], and one all-reduce (graph-capturable, unlike an all-gather of logits)
+    combines them into H = logZ - E_p[logit].
+    """
+    w = self.__dict__["_lm_head"].weight
+    tp, rank = get_tensor_model_parallel_world_size(), get_tensor_model_parallel_rank()
+    out = []
+    for i in range(0, h.shape[0], 1024):
+        logit = (h[i:i + 1024] @ w.t()).float()
+        buf = torch.zeros(logit.shape[0], 2 * tp, device=logit.device, dtype=torch.float32)
+        buf[:, rank] = torch.logsumexp(logit, dim=-1)
+        buf[:, tp + rank] = (torch.softmax(logit, dim=-1) * logit).sum(-1)
+        if tp > 1:
+            buf = tensor_model_parallel_all_reduce(buf)
+        lse = torch.logsumexp(buf[:, :tp], dim=-1, keepdim=True)
+        out.append(lse - (torch.exp(buf[:, :tp] - lse) * buf[:, tp:]).sum(-1, keepdim=True))
+    return torch.cat(out)
+
+
 def _natural_tail(self, positions, x, start, end):
     """The un-looped path from window layer `start` through the final norm (`contrast`).
 
@@ -470,31 +504,45 @@ def _looped_model_forward(self, input_ids, positions, intermediate_tensors=None,
     loop_layers = {j for a, b in windows for j in range(a, b)}
     depth_of = {j: (j - a, b - a) for a, b in windows for j in range(a, b)}
     gamma = float(cfg.get("contrast") or 0.0)
-    if gamma:
+    ent = cfg.get("ent_gate")
+    if gamma or ent:
         assert len(windows) == 1 and cfg["mode"] == "layer" and not recirc, \
-            "contrast supports one window in layer mode, without recirculation"
-    nat_out = None
+            "contrast / ent_gate support one window in layer mode, without recirculation"
+    nat_out, beta_t = None, None
     i = self.start_layer
     for start, end in windows:
         for j in range(i, start):
             hidden, residual = self.layers[j](positions, hidden, residual)
             keep(j, hidden, residual)
         x = hidden if residual is None else hidden + residual
-        if gamma:
+        if gamma or ent:
             nat_out = _natural_tail(self, positions, x, start, end)
+        if ent:
+            h0, h1 = (float(v) for v in ent)
+            H = _next_token_entropy(self, nat_out)
+            if (LOG_DIVERGENCE and _contrast_logged[0] < 12
+                    and not torch.cuda.is_current_stream_capturing()
+                    and float(H.max() - H.min()) > 1e-3):    # skip uniform warm-up batches
+                _contrast_logged[0] += 1
+                v = torch.quantile(H.flatten(), torch.tensor([.1, .5, .75, .9, .99], device=H.device)).tolist()
+                print(f"ENT_GATE n={H.numel()} H p10={v[0]:.3f} p50={v[1]:.3f} p75={v[2]:.3f} "
+                      f"p90={v[3]:.3f} p99={v[4]:.3f}", flush=True)
+            g = ((H - h0) / (h1 - h0)).clamp(0.0, 1.0)
+            b_off, b_on = float(cfg.get("ent_beta_off", 1.0)), float(cfg.get("ent_beta_on", 0.0))
+            beta_t = (b_off + (b_on - b_off) * g).to(x.dtype)
         if cfg["mode"] == "block":
             x = _block_loop([self.layers[j] for j in range(start, end)], positions, x, cfg)
             keep(end - 1, x, None)
         else:
             for j in range(start, end):
-                x = _loop_layer(self.layers[j], positions, x, cfg, (j - start, end - start))
+                x = _loop_layer(self.layers[j], positions, x, cfg, (j - start, end - start), beta_t)
                 keep(j, x, None)
         hidden, residual, i = x, None, end
     for j in range(i, self.end_layer):
         hidden, residual = self.layers[j](positions, hidden, residual)
         keep(j, hidden, residual)
     out, _ = self.norm(hidden, residual)
-    if nat_out is not None:
+    if gamma:
         mix = out + gamma * (out - nat_out)
         if (LOG_DIVERGENCE and _contrast_logged[0] < 12
                 and not torch.cuda.is_current_stream_capturing()):
@@ -530,6 +578,9 @@ class LoopedQwen3MoeForCausalLM(Qwen3MoeForCausalLM):
         if self._loop_cfg is not None:
             self.model._loop_cfg = self._loop_cfg
             self.model.forward = types.MethodType(_looped_model_forward, self.model)
+            # plain attribute, not a submodule: registering it would duplicate lm_head's
+            # parameters under the inner model's name and confuse load_weights
+            self.model.__dict__["_lm_head"] = self.lm_head
 
     def load_weights(self, weights):
         loaded = super().load_weights(weights)
