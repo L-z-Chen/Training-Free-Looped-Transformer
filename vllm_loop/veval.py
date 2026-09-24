@@ -19,7 +19,9 @@ its loop-off baseline). Output: $LOOP_RUNS/<run_name>/shard<i>.jsonl (default
 
 Environment: AIME_MODEL (default Qwen/Qwen3-30B-A3B) and AIME_MAX_TOKENS (default 32768,
 the setting of every number in the README). Sampling follows each model's own
-recommendation (SAMPLING below).
+recommendation (SAMPLING below). AIME_ROPE_YARN=<factor> applies static YaRN over the
+model's original context (Qwen3's documented recipe for going past 32k: factor 2 allows
+64000 new tokens), identically for the baseline and every loop config.
 """
 import json
 import os
@@ -58,12 +60,18 @@ def main():
               gpu_memory_utilization=0.92, enable_prefix_caching=False,
               tensor_parallel_size=tp, seed=0,
               compilation_config={"mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY"})
+    ovr = {}
+    if os.environ.get("AIME_ROPE_YARN"):
+        ovr["rope_scaling"] = {"rope_type": "yarn", "factor": float(os.environ["AIME_ROPE_YARN"]),
+                               "original_max_position_embeddings": 32768}
     if "Kimi-VL" in MODEL:                 # text-only use of a vision-language model
         kw.update(trust_remote_code=True, limit_mm_per_prompt={"image": 0})
     if cfg is not None and cfg.get("generic"):
-        kw["hf_overrides"] = {"gloop": {k: v for k, v in cfg.items() if k != "generic"}}
+        ovr["gloop"] = {k: v for k, v in cfg.items() if k != "generic"}
     elif cfg is not None:
-        kw["hf_overrides"] = {"architectures": ["LoopedQwen3MoeForCausalLM"], "loop_cfg": cfg}
+        ovr.update(architectures=["LoopedQwen3MoeForCausalLM"], loop_cfg=cfg)
+    if ovr:
+        kw["hf_overrides"] = ovr
     llm = LLM(**kw)
     tok = llm.get_tokenizer()
 
@@ -89,7 +97,8 @@ def main():
     ntok = sum(len(o.outputs[0].token_ids) for o in outs)
     (out_dir / f"shard{shard}.meta.json").write_text(
         json.dumps({"elapsed_s": dt, "requests": len(reqs), "tokens": ntok, "model": MODEL,
-                    "max_tokens": MAX_TOKENS, "sampling": SAMPLING[MODEL]}))
+                    "max_tokens": MAX_TOKENS, "sampling": SAMPLING[MODEL],
+                    "rope_yarn": os.environ.get("AIME_ROPE_YARN")}))
     print(f"DONE {name} shard {shard}: {len(reqs)} requests, {ntok} tokens in {dt:.0f}s")
 
 
