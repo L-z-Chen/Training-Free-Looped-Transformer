@@ -273,7 +273,9 @@ Baseline runs: `{"K": 1}` at seeds 1–4 and `{"windows": []}` at seed 1. Window
 seeds 1–4, plus two seed-1 reruns made with a plugin revision that did its blends in fp32.
 
 The best configuration found raises AIME26 by about two points, but that is **not
-statistically significant** at the level the data supports.
+statistically significant** at the level the data supports. (A later configuration —
+integration time T = 2 on the 5-layer window 29–33, at 38,912 tokens — reaches +3.13,
+p = 0.047; see "Why the effect is small" below.)
 
 ### Reproduction from this code
 
@@ -437,6 +439,11 @@ Sweeping the integration time further at 38,912 tokens (seed 1; that seed's base
 
 Finer steps at the same T change nothing, and less anchoring or T ≥ 3 lowers the
 score; T = 4 collapses and lengthens the chains.
+
+The 5-layer cell replicates. T = 2 on layers 29–33 (`{"start": 29, "end": 34, "step":
+0.3333333}`) scores 74.79 / 75.42 / 75.00 on seeds 1–3: **75.07% vs 71.94%, +3.13,
+paired 95% CI [+0.34, +5.91], p = 0.047**. It is the first configuration to pass the
+problem-level test. The optimal width moved with T: 4 layers at T = 1, 5 at T = 2.
 
 The raw generations behind this section and the two above were on the VM's local SSD,
 which was wiped when the VM restarted on 2026-09-24; the numbers here are what remains.
