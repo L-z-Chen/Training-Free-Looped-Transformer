@@ -405,9 +405,24 @@ from 76.8% to 68.5% and 71.9%).
 Concentrating a stronger correction on uncertain tokens does not help: the fork shift is
 not made at those tokens. Doubling the integration time does. Problem 9 goes from
 29% to 77%, and 26, 22 and 27 rise too. But the longer chains truncate more, and −1.94 of
-T = 2's −2.08 points of losses fall on problems whose truncation rose. The 64k follow-up
-(static YaRN ×2, `AIME_ROPE_YARN=2 AIME_MAX_TOKENS=64000`) tests whether the gains
-survive once that cap is lifted.
+T = 2's −2.08 points of losses fall on problems whose truncation rose. Lifting the cap does
+not change the picture:
+
+- 64k via static YaRN ×2 (`AIME_ROPE_YARN=2 AIME_MAX_TOKENS=64000`) breaks the model
+  itself: the baseline falls to 15.4%, with 66.5% of samples running to the cap and
+  degenerating into strings like "1.1.1 1.1.1.1".
+- At 38,912 new tokens (the model's native maximum and Qwen's recommended AIME
+  setting; seeds 1–3), truncation drops to 3–5% and the result matches 32k:
+
+| config (38,912 tokens) | accuracy | Δ | paired 95% CI | p | truncation |
+|---|---:|---:|---|---:|---:|
+| baseline | 71.94% | — | — | — | 3.5% |
+| plain loop (T = 1) | 74.03% | +2.08 | [−0.53, +4.70] | 0.217 | 3.8% |
+| T = 2 | 74.38% | +2.43 | [−1.49, +6.35] | 0.550 | 5.1% |
+
+T = 2's gains repeat (problem 9 +50 pts, 26 +19, 27 +17, 22 +15), and its
+losses (problem 12 −10; 10, 23 and 25 −6) are no longer driven by truncation. At 48
+samples per problem and config, −6 is about one standard error.
 
 The raw generations behind this section and the two above were on the VM's local SSD,
 which was wiped when the VM restarted on 2026-09-24; the numbers here are what remains.
