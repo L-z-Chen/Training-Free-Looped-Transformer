@@ -444,6 +444,23 @@ The 5-layer cell replicates. T = 2 on layers 29–33 (`{"start": 29, "end": 34, 
 0.3333333}`) scores 74.79 / 75.42 / 75.00 on seeds 1–3: **75.07% vs 71.94%, +3.13,
 paired 95% CI [+0.34, +5.91], p = 0.047**. It is the first configuration to pass the
 problem-level test. The optimal width moved with T: 4 layers at T = 1, 5 at T = 2.
+T = 2.5 on the same window averages 75.56% (77.08 / 75.00 / 74.58; +3.61, p = 0.223),
+and T = 3 drops again (73.12%, seed 1).
+
+Three attempts to push past it on layers 29–33 (seeds 1–2; that pair's baseline is 72.08%,
+T = 2 75.10%, T = 2.5 76.04%) all fall short:
+
+| variant | accuracy | Δ | p | truncation |
+|---|---:|---:|---:|---:|
+| T = 2.5, loop only below position 16384 | 75.31% | +3.23 | 0.299 | 4.8% |
+| T = 2, `kv: "last"` | 69.58% | −2.50 | 0.055 | 6.7% |
+| T = 2, `norm_interp: false` | 74.90% | +2.81 | 0.259 | 4.6% |
+
+Stopping the loop late in the chain removes T = 2.5's extra truncation but not its score:
+the decisive reasoning is mid-chain. On problems 9 and 27 the final answer first appears
+31–67% of the way through the chain. Letting later tokens attend to the iterated K/V
+turns the gain into a loss, so writing back the natural pass's K/V is what keeps the
+loop safe.
 
 The raw generations behind this section and the two above were on the VM's local SSD,
 which was wiped when the VM restarted on 2026-09-24; the numbers here are what remains.
