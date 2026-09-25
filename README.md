@@ -424,6 +424,20 @@ T = 2's gains repeat (problem 9 +50 pts, 26 +19, 27 +17, 22 +15), and its
 losses (problem 12 −10; 10, 23 and 25 −6) are no longer driven by truncation. At 48
 samples per problem and config, −6 is about one standard error.
 
+Sweeping the integration time further at 38,912 tokens (seed 1; that seed's baseline is
+70.21%, T = 1 73.75%, T = 2 74.58%) shows T ≈ 2 is the peak:
+
+| window 29–32 unless noted | T = K·s | accuracy | truncation | problems 9, 26, 27 |
+|---|---:|---:|---:|---:|
+| `step` 0.5 | 3 | 72.92% | 5.4% | 54.2% |
+| `K` 12, `step` 1/6 | 2 | 73.75% | 4.4% | 56.2% |
+| `K` 12, `step` 1/3 | 4 | 62.29% | 11.5% | 31.2% |
+| `step` 1/3, β = 0.25 | 2 | 72.50% | 5.6% | 47.9% |
+| `step` 1/3, window 29–33 | 2 | 74.79% | 5.0% | 35.4% |
+
+Finer steps at the same T change nothing, and less anchoring or T ≥ 3 lowers the
+score; T = 4 collapses and lengthens the chains.
+
 The raw generations behind this section and the two above were on the VM's local SSD,
 which was wiped when the VM restarted on 2026-09-24; the numbers here are what remains.
 
