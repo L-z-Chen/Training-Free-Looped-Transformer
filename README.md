@@ -274,8 +274,8 @@ seeds 1–4, plus two seed-1 reruns made with a plugin revision that did its ble
 
 The best configuration found raises AIME26 by about two points, but that is **not
 statistically significant** at the level the data supports. (A later configuration —
-integration time T = 2 on the 5-layer window 29–33, at 38,912 tokens — reaches +3.13,
-p = 0.047; see "Why the effect is small" below.)
+integration time T = 2 on the 5-layer window 29–33, at 38,912 tokens — reaches +2.79
+over five seeds; see "Why the effect is small" below.)
 
 ### Reproduction from this code
 
@@ -446,6 +446,14 @@ paired 95% CI [+0.34, +5.91], p = 0.047**. It is the first configuration to pass
 problem-level test. The optimal width moved with T: 4 layers at T = 1, 5 at T = 2.
 T = 2.5 on the same window averages 75.56% (77.08 / 75.00 / 74.58; +3.61, p = 0.223),
 and T = 3 drops again (73.12%, seed 1).
+
+**Both regress with more seeds.** Adding seeds 4–5 to the baseline (69.79, 72.08) and to both
+configs: over five seeds the baseline averages 71.54%, T = 2 averages 74.33% (+2.79, CI
+[+0.03, +5.55], p = 0.089) and T = 2.5 averages 74.33% (+2.79, CI [−0.69, +6.27], p = 0.513).
+Against the baseline pooled with the six historical 38,912-token runs (71.80%, 11 runs)
+both are +2.53. Raising T and widening the window to 5 layers roughly doubles the
+loop's effect, from about +1.4 to about +2.5–2.8, and the 3-seed "+3.1, p = 0.047" was
+partly the selection of a good first draw.
 
 Three attempts to push past it on layers 29–33 (seeds 1–2; that pair's baseline is 72.08%,
 T = 2 75.10%, T = 2.5 76.04%) all fall short:
