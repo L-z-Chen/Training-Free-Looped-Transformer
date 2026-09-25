@@ -455,6 +455,12 @@ both are +2.53. Raising T and widening the window to 5 layers roughly doubles th
 loop's effect, from about +1.4 to about +2.5–2.8, and the 3-seed "+3.1, p = 0.047" was
 partly the selection of a good first draw.
 
+Gating the large-T loop by entropy does not help either (layers 29–33, seeds 1–2, `ent_gate`
+[0.3, 1] with β 1 → 0.5). At T = 2.5 it is 71.77% (−0.31), T = 3 is 74.69% (+2.60) and T = 4
+is 73.44% (+1.35). Gating keeps T = 4 from collapsing (62.29% ungated), so the collapse comes
+from disturbing confident tokens. But it also removes the gain: the loop helps only when
+every token's state moves, with the effect building up through the context.
+
 Three attempts to push past it on layers 29–33 (seeds 1–2; that pair's baseline is 72.08%,
 T = 2 75.10%, T = 2.5 76.04%) all fall short:
 
