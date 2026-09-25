@@ -66,6 +66,11 @@ hf_overrides={"architectures": ["LoopedQwen3MoeForCausalLM"], "loop_cfg": {...}}
                     default correction where it is not). The loop only moves uncertain
                     tokens anyway (91% of its KL sits at H > 0.3), so this concentrates a
                     stronger correction there. Single window; costs the natural tail pass.
+    channel         "context": the token's own prediction comes from the natural pass while
+                    the looped pass writes the K/V of the layers above the window (what later
+                    tokens see); "prediction": the reverse -- looped output, natural K/V
+                    rewritten everywhere. Splits which path the loop's effect travels by.
+                    Single window; costs one natural tail pass.
     contrast_norm   with `contrast`: None (default) leaves the extrapolated norm as it falls;
                     "loop" rescales it to |o_loop| (direction only -- raw extrapolation
                     lengthens the state, which sharpens the logits like a lower
@@ -505,17 +510,21 @@ def _looped_model_forward(self, input_ids, positions, intermediate_tensors=None,
     depth_of = {j: (j - a, b - a) for a, b in windows for j in range(a, b)}
     gamma = float(cfg.get("contrast") or 0.0)
     ent = cfg.get("ent_gate")
-    if gamma or ent:
+    channel = cfg.get("channel")
+    assert channel in (None, "context", "prediction"), channel
+    if gamma or ent or channel:
         assert len(windows) == 1 and cfg["mode"] == "layer" and not recirc, \
-            "contrast / ent_gate support one window in layer mode, without recirculation"
-    nat_out, beta_t = None, None
+            "contrast / ent_gate / channel support one window in layer mode, without recirculation"
+    nat_out, beta_t, x_in = None, None, None
     i = self.start_layer
     for start, end in windows:
         for j in range(i, start):
             hidden, residual = self.layers[j](positions, hidden, residual)
             keep(j, hidden, residual)
         x = hidden if residual is None else hidden + residual
-        if gamma or ent:
+        x_in = x
+        if gamma or ent or channel == "context":
+            # natural path first: the looped pass that follows writes the K/V that stays
             nat_out = _natural_tail(self, positions, x, start, end)
         if ent:
             h0, h1 = (float(v) for v in ent)
@@ -542,6 +551,11 @@ def _looped_model_forward(self, input_ids, positions, intermediate_tensors=None,
         hidden, residual = self.layers[j](positions, hidden, residual)
         keep(j, hidden, residual)
     out, _ = self.norm(hidden, residual)
+    if channel == "context":
+        out = nat_out
+    elif channel == "prediction":
+        # keep the looped output, then rewrite window + upper-layer K/V from the natural path
+        _natural_tail(self, positions, x_in, start, end)
     if gamma:
         mix = out + gamma * (out - nat_out)
         if (LOG_DIVERGENCE and _contrast_logged[0] < 12
