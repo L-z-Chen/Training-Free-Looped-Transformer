@@ -105,8 +105,10 @@ def main():
     tok = llm.get_tokenizer()
 
     reqs = [(i, j) for j in range(k) if j % nshards == shard for i in range(len(items))]
+    # gpt-oss: AIME_REASONING_EFFORT=low|medium|high overrides the template's default (medium)
+    effort = {"reasoning_effort": os.environ["AIME_REASONING_EFFORT"]} if os.environ.get("AIME_REASONING_EFFORT") else {}
     prompts = [tok.apply_chat_template([{"role": "user", "content": PROMPT.format(p=items[i][0])}],
-                                       add_generation_prompt=True, tokenize=False)
+                                       add_generation_prompt=True, tokenize=False, **effort)
                for i, _ in reqs]
     seed = lambda i, j: seed_base * 1_000_000 + i * 1000 + j
     params = [SamplingParams(**SAMPLING[MODEL], max_tokens=MAX_TOKENS, seed=seed(i, j))
@@ -128,7 +130,8 @@ def main():
     (out_dir / f"shard{shard}.meta.json").write_text(
         json.dumps({"elapsed_s": dt, "requests": len(reqs), "tokens": ntok, "model": MODEL,
                     "max_tokens": MAX_TOKENS, "sampling": SAMPLING[MODEL],
-                    "rope_yarn": os.environ.get("AIME_ROPE_YARN"), "dataset": DATASET}))
+                    "rope_yarn": os.environ.get("AIME_ROPE_YARN"), "dataset": DATASET,
+                    "reasoning_effort": os.environ.get("AIME_REASONING_EFFORT")}))
     print(f"DONE {name} shard {shard}: {len(reqs)} requests, {ntok} tokens in {dt:.0f}s")
 
 
