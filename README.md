@@ -477,6 +477,12 @@ prediction-only T = 4 is harmless and useless (71.67%). The gain travels through
 context, and so does the chain-lengthening that caps T, so separating the paths cannot
 buy a larger T.
 
+Looping only the problem statement at large T (positions < 256, seeds 1–2) avoids the
+lengthening but gives up most of the gain. T = 3 and T = 4 both score 73.02% (+0.94),
+with truncation down to 2–3% and problems 9/26/27 up to 48–65%. The fork problems
+respond to a deeper-processed problem representation, but the rest of the gain needs the
+reasoning tokens looped too.
+
 Three attempts to push past it on layers 29–33 (seeds 1–2; that pair's baseline is 72.08%,
 T = 2 75.10%, T = 2.5 76.04%) all fall short:
 
