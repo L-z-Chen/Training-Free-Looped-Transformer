@@ -374,7 +374,8 @@ single natural pass, re-evaluated along the path. The difference is second order
 (≈ J_Δ·Δ): window outputs move ~2% from the natural pass, ~1% after the β = 0.5 anchor.
 
 **It only touches uncertain tokens and has no preference for correct reasoning.**
-Teacher-forced on 17 baseline traces (97k positions; K=1 vs the loop, top-20 logprobs):
+Teacher-forced on 17 baseline traces (97k positions; K=1 vs the loop, top-20 logprobs;
+`vllm_loop/kl_probe.py` + `kl_analyze.py`):
 
 | natural next-token entropy | share of positions | mean KL (nats) | share of total KL | top-1 token changed |
 |---|---:|---:|---:|---:|
@@ -531,8 +532,10 @@ Training-Free-Looped-Transformers/
 └── vllm_loop/
     ├── pyproject.toml       plugin package (vllm.general_plugins entry point)
     ├── looped_qwen3_moe.py  LoopedQwen3MoeForCausalLM: layer_anchored_frozen in vLLM
-    ├── looped_generic.py    the default loop for other MoE architectures ("gloop")
+    ├── looped_generic.py    the default loop for other architectures ("gloop")
     ├── gloop_check.py       beta=1 vs K=1 token-for-token check of the generic port
+    ├── kl_probe.py          teacher-forced top-20 logprobs of fixed traces (root-cause probe)
+    ├── kl_analyze.py        where the loop moves the next-token distribution
     ├── veval.py             AIME26 avg@k on one engine shard
     ├── run_eval.sh          one engine per GPU group (4 x TP=2 by default)
     ├── panalyze.py          problem-level paired comparison

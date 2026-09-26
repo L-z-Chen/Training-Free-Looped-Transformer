@@ -26,7 +26,8 @@ Per window layer, with x the full residual stream (hidden + residual):
 Requirements on the model: decoder layers called as layer(positions, hidden, residual) or
 layer(hidden, positions, residual) returning (hidden, residual) with a fused add-norm
 (vLLM's Llama-style layers), and an MoE block at layer.mlp exposing its router as .gate or
-.router. Checked: ERNIE-4.5-MoE, GLM-4.5, gpt-oss, DeepSeek-V2/V3 (incl. Kimi-VL), Qwen3-MoE.
+.router (dense layers are looped without freezing). Checked: ERNIE-4.5-MoE, GLM-4.5, gpt-oss,
+DeepSeek-V2/V3 (incl. Kimi-VL), Qwen3-MoE, dense Qwen3.
 """
 import functools
 import importlib
@@ -44,6 +45,7 @@ TARGETS = [
     ("vllm.model_executor.models.deepseek_v2", "DeepseekV2ForCausalLM"),
     ("vllm.model_executor.models.kimi_vl", "KimiVLForConditionalGeneration"),
     ("vllm.model_executor.models.qwen3_moe", "Qwen3MoeForCausalLM"),
+    ("vllm.model_executor.models.qwen3", "Qwen3ForCausalLM"),     # dense: no router to freeze
 ]
 
 
