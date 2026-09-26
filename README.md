@@ -345,12 +345,32 @@ model (seed 1 as a screen; Δ vs that model's baseline mean; * = 2 seeds):
 | ERNIE-4.5-21B-A3B (70.31, 0.2) | 2: +0.5 · 5: −2.6 · 8: −0.9 · 11: −3.0 · 14: −1.6 · 17*: −2.3 · 20: −0.9 · 23: −3.7 · 25: −1.8 | 4: −4.1 · 10: −2.0 · 16: −2.8 · 22: −2.4 |
 | Kimi-VL-A3B-Thinking (43.75, 3.3) | 2: −1.9 · 5: +0.8 · 8*: +1.5 · 11: −1.9 · 13: −0.8 · 16*: −0.5 · 19: −0.4 · 22: −0.4 · 24: +1.9 | 4: +1.0 · 10: −2.9 · 16: −0.2 · 21: −1.3 |
 
-No window on any of the three models rises above run-to-run noise, and on ERNIE the loop
+At T = 1 no window on any of the three models rises above run-to-run noise, and on ERNIE the loop
 hurts nearly everywhere (12 of 13 windows negative, mean −2.2). One effect is real, but it
 is not accuracy: on Kimi-VL, looping layers 8–9 shortens the reasoning — truncation at
 64k drops from 13.5% to 5.7% (19 problems lower, 5 higher, p = 0.0004) and mean length
 from 18.8k to 15.3k tokens (p = 0.007), on both seeds, while accuracy stays level
 (+1.46, p = 0.57).
+
+**gpt-oss-20b at T = 2 (`"step": 0.3333333`).** Sweeping the window again at T = 2 (64k, medium
+effort, baseline 78.33 / 81.67 / 80.00 = 80.00%) finds a window that works: **layers 12–14
+score 83.54 / 84.38 / 84.17 = 84.03%, +4.03, paired 95% CI [+0.15, +7.90], p = 0.029**. That
+matches gpt-oss's own high-effort baseline (83.96%) at 11.6k mean tokens instead of 31k.
+Elsewhere the loop mostly moves how long gpt-oss thinks, not how well:
+
+| layers (T = 2, medium effort) | accuracy | mean tokens |
+|---|---:|---:|
+| baseline | 80.00% | 10.2k |
+| 5–6 / 8–9 | 73.96 / 72.71% | 6.9k |
+| 5–6 with β = 1.5 (reversed) | 77.9% | 16.5k |
+| 12–14 (3 seeds) | **84.03%** | 11.6k |
+| 13–15 / 14–16 (3 seeds) / 15–17 | 80.6 / 80.14 / 72.9% | 11.0 / 10.9 / 7.7k |
+| 14–16 at T = 2.5 / T = 3 | 77.5 / 70.2% | 13.3 / 22.7k |
+
+Early windows cut the reasoning by a third (like a lower effort level) and cost 6–7 pts;
+reversing their direction lengthens it by 58% without gaining accuracy. At high effort
+(83.96%, 15.6% of samples overrun 64k) a mild early loop trims the overruns: layers 8–9
+with β = 0.75 give 86.04% over two seeds (+2.08, p = 0.091).
 
 ```bash
 export AIME_MODEL=openai/gpt-oss-20b AIME_MAX_TOKENS=65536
