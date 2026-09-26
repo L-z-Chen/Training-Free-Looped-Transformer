@@ -46,8 +46,6 @@ PROMPT = "{p}\n\nPlease reason step by step, and put your final answer within \\
 # each model's recommended sampling for its reasoning mode (model card / generation_config)
 SAMPLING = {
     "Qwen/Qwen3-30B-A3B": dict(temperature=0.6, top_p=0.95, top_k=20),
-    "Qwen/Qwen3-30B-A3B-Thinking-2507": dict(temperature=0.6, top_p=0.95, top_k=20),
-    "Qwen/Qwen3-8B": dict(temperature=0.6, top_p=0.95, top_k=20),
     "openai/gpt-oss-20b": dict(temperature=1.0, top_p=1.0),
     "baidu/ERNIE-4.5-21B-A3B-Thinking": dict(temperature=0.6, top_p=0.95),
     "moonshotai/Kimi-VL-A3B-Thinking-2506": dict(temperature=0.6),
