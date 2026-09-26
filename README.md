@@ -353,9 +353,21 @@ from 18.8k to 15.3k tokens (p = 0.007), on both seeds, while accuracy stays leve
 (+1.46, p = 0.57).
 
 **gpt-oss-20b at T = 2 (`"step": 0.3333333`).** Sweeping the window again at T = 2 (64k, medium
-effort, baseline 78.33 / 81.67 / 80.00 = 80.00%) finds a window that works: **layers 12–14
-score 83.54 / 84.38 / 84.17 = 84.03%, +4.03, paired 95% CI [+0.15, +7.90], p = 0.029**. That
-matches gpt-oss's own high-effort baseline (83.96%) at 11.6k mean tokens instead of 31k.
+effort) finds a window that works, and it holds up with more seeds:
+
+| gpt-oss-20b, medium effort, 64k | seeds 1–5 | mean | Δ | paired 95% CI | p |
+|---|---|---:|---:|---|---:|
+| baseline | 78.33 / 81.67 / 80.00 / 77.29 / 80.62 | 79.58% | — | — | — |
+| loop, layers 12–14, T = 2 | 83.54 / 84.38 / 84.17 / 84.17 / 84.79 | **84.21%** | **+4.63** | [+1.09, +8.16] | **0.012** |
+
+```bash
+AIME_MODEL=openai/gpt-oss-20b AIME_MAX_TOKENS=65536 \
+  vllm_loop/run_eval.sh go_loop_s1 '{"generic": true, "start": 12, "end": 15, "step": 0.3333333}' 16 1
+```
+
+It is the first significant gain on a non-Qwen model. Unlike on Qwen, the estimate grew with
+seeds (+4.03 over three), and the looped runs vary far less than the baseline. It matches
+gpt-oss's own high-effort baseline (83.96%) at 11.6k mean tokens instead of 31k.
 Elsewhere the loop mostly moves how long gpt-oss thinks, not how well:
 
 | layers (T = 2, medium effort) | accuracy | mean tokens |
