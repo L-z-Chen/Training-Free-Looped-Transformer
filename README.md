@@ -461,6 +461,22 @@ is 73.44% (+1.35). Gating keeps T = 4 from collapsing (62.29% ungated), so the c
 from disturbing confident tokens. But it also removes the gain: the loop helps only when
 every token's state moves, with the effect building up through the context.
 
+Splitting the two paths the loop can act through (`channel`, layers 29–33) says where both
+the gain and the harm go. `"context"` feeds the looped states only into the K/V of the
+layers above the window, which later tokens attend to, and keeps each token's own
+prediction natural. `"prediction"` does the reverse. At T = 2.5, seeds 1–2:
+
+| channel | accuracy | Δ vs 72.08 | truncation | mean tokens |
+|---|---:|---:|---:|---:|
+| both (the plain loop) | 76.04% | +3.96 | 6.9% | 17.4k |
+| context only | 75.10% | +3.02 | 6.0% | 17.3k |
+| prediction only | 72.60% | +0.52 | 4.2% | 15.6k |
+
+Context-only T = 4 still collapses (65.00%, 22.1k-token chains, seed 1), and
+prediction-only T = 4 is harmless and useless (71.67%). The gain travels through the
+context, and so does the chain-lengthening that caps T, so separating the paths cannot
+buy a larger T.
+
 Three attempts to push past it on layers 29–33 (seeds 1–2; that pair's baseline is 72.08%,
 T = 2 75.10%, T = 2.5 76.04%) all fall short:
 
